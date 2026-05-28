@@ -7,5 +7,18 @@ services:
     volumes:
       - ./verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
       - verdaccio-storage:/verdaccio/storage
+
+  nginx:
+    image: nginx:alpine
+    container_name: repro-aube-auth-nginx
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/localhost.crt:/etc/nginx/certs/localhost.crt:ro
+      - ./nginx/localhost.key:/etc/nginx/certs/localhost.key:ro
+    depends_on:
+      - verdaccio
+
 volumes:
   verdaccio-storage:
