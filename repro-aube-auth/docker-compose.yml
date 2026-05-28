@@ -1,0 +1,13 @@
+services:
+  verdaccio:
+    image: verdaccio/verdaccio:5
+    container_name: repro-aube-auth-verdaccio
+    ports:
+      - "4873:4873"
+    volumes:
+      - ./verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
+      - verdaccio-storage:/verdaccio/storage
+      - verdaccio-htpasswd:/verdaccio/conf/htpasswd
+volumes:
+  verdaccio-storage:
+  verdaccio-htpasswd:
