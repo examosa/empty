@@ -7,7 +7,5 @@ services:
     volumes:
       - ./verdaccio/config.yaml:/verdaccio/conf/config.yaml:ro
       - verdaccio-storage:/verdaccio/storage
-      - verdaccio-htpasswd:/verdaccio/conf/htpasswd
 volumes:
   verdaccio-storage:
-  verdaccio-htpasswd:

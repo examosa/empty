@@ -6,9 +6,9 @@ WORK_DIR="${WORK_DIR:-/tmp/repro-aube-auth-run}"
 REGISTRY_URL="${REGISTRY_URL:-http://localhost:4873}"
 SCOPE="@testscope"
 PACKAGE_NAME="${SCOPE}/harmless"
-PACKAGE_VERSION="1.0.0"
+PACKAGE_VERSION="${PACKAGE_VERSION:-1.0.0-repro.$(date +%s)}"
 FULL_PACKAGE="${PACKAGE_NAME}@${PACKAGE_VERSION}"
-USERNAME="${VERDACCIO_USERNAME:-repro-user}"
+USERNAME="${VERDACCIO_USERNAME:-repro-user-$(date +%s)}"
 PASSWD="${VERDACCIO_PASSWORD:-repro-pass}"
 EMAIL="${VERDACCIO_EMAIL:-repro@example.com}"
 
@@ -55,21 +55,28 @@ cp "${ROOT_DIR}/.npmrc" "${WORK_DIR}/consumer/.npmrc"
 cp "${ROOT_DIR}/.yarnrc.yml" "${WORK_DIR}/consumer/.yarnrc.yml"
 
 echo "[2/8] Logging in to Verdaccio"
-printf "%s\n%s\n%s\n" "${USERNAME}" "${PASSWD}" "${EMAIL}" | npm adduser --registry "${REGISTRY_URL}" --auth-type=legacy >"${WORK_DIR}/npm-adduser.log" 2>&1
+USER_PAYLOAD="$(printf '{"name":"%s","password":"%s","email":"%s","type":"user"}' "${USERNAME}" "${PASSWD}" "${EMAIL}")"
+curl -sS -X PUT "${REGISTRY_URL}/-/user/org.couchdb.user:${USERNAME}" \
+  -H "content-type: application/json" \
+  --data "${USER_PAYLOAD}" >"${WORK_DIR}/verdaccio-adduser.json"
 
-TOKEN_LINE="$(grep "//localhost:4873/:_authToken=" "${NPM_USERCONFIG}" | tail -n 1 || true)"
-if [[ -z "${TOKEN_LINE}" ]]; then
-  echo "Could not find auth token in ${NPM_USERCONFIG}" >&2
-  cat "${WORK_DIR}/npm-adduser.log" >&2 || true
+TOKEN="$(node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!data.token){process.exit(1)} process.stdout.write(data.token)' "${WORK_DIR}/verdaccio-adduser.json" 2>"${WORK_DIR}/npm-adduser.log" || true)"
+if [[ -z "${TOKEN}" ]]; then
+  echo "Could not obtain auth token from Verdaccio user creation response" >&2
+  cat "${WORK_DIR}/verdaccio-adduser.json" >&2 || true
   exit 1
 fi
-TOKEN="${TOKEN_LINE#*=}"
 export VERDACCIO_TOKEN="${TOKEN}"
+cat > "${NPM_USERCONFIG}" <<EOF
+@testscope:registry=${REGISTRY_URL}/
+//localhost:4873/:_authToken=${TOKEN}
+always-auth=true
+EOF
 
 echo "[3/8] Publishing ${FULL_PACKAGE}"
 (
   cd "${WORK_DIR}/publisher"
-  npm publish --registry "${REGISTRY_URL}" --access public >"${WORK_DIR}/npm-publish.log" 2>&1
+  npm publish --registry "${REGISTRY_URL}" --access public --tag repro >"${WORK_DIR}/npm-publish.log" 2>&1
 )
 
 echo "[4/8] Getting tarball URL"
