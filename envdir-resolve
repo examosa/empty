@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# envdir-resolve: Expand $VAR references across envdir-style files,
+# write resolved values to a state directory, then exec envdir.
+#
+# Usage: envdir-resolve [DIR] -- PROG [ARGS]
+#        envdir-resolve -- PROG [ARGS]
+#
+# DIR defaults to ${XDG_CONFIG_HOME:-$HOME/.config}/env
+# Output goes to ${XDG_STATE_HOME:-$HOME/.local/state}/env
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Argument parsing: optional DIR before --
+# ---------------------------------------------------------------------------
+src_dir=""
+while (( $# > 0 )); do
+    case "$1" in
+        --)
+            shift
+            break
+            ;;
+        -*)
+            printf 'envdir-resolve: unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -n "$src_dir" ]]; then
+                printf 'envdir-resolve: unexpected argument before --: %s\n' "$1" >&2
+                exit 1
+            fi
+            src_dir="$1"
+            shift
+            ;;
+    esac
+done
+
+if (( $# == 0 )); then
+    printf 'Usage: envdir-resolve [DIR] -- PROG [ARGS]\n' >&2
+    exit 1
+fi
+
+: "${src_dir:=${XDG_CONFIG_HOME:-$HOME/.config}/env}"
+dst_dir="${XDG_STATE_HOME:-$HOME/.local/state}/env"
+
+# ---------------------------------------------------------------------------
+# Up-to-date check: skip if dst_dir is newer than every file in src_dir
+# ---------------------------------------------------------------------------
+if [[ -d "$dst_dir" ]]; then
+    # -print -quit avoids a broken pipe when only the first match is needed
+    newer=$(find "$src_dir" -newer "$dst_dir" -type f 2>/dev/null -print -quit)
+    if [[ -z "$newer" ]]; then
+        exec envdir "$dst_dir" "$@"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Load raw values from all files in src_dir
+# ---------------------------------------------------------------------------
+if [[ ! -d "$src_dir" ]]; then
+    printf 'envdir-resolve: source directory does not exist: %s\n' "$src_dir" >&2
+    exit 1
+fi
+
+declare -A raw_values=()        # raw_values[NAME]    = first-line content
+declare -A resolved_values=()   # resolved_values[NAME] = fully expanded content
+declare -A resolving=()         # resolving[NAME]=1   while resolution is in progress
+
+var_names=()
+
+for f in "$src_dir"/*; do
+    [[ -f "$f" ]] || continue
+    name="${f##*/}"
+    [[ "$name" == .* ]] && continue      # skip dot-files (envdir convention)
+    [[ "$name" == *=* ]] && continue     # skip names containing '=' (invalid)
+    # Read first line (envdir semantics); strip trailing whitespace via regex
+    IFS= read -r line < "$f" || true
+    [[ "$line" =~ ^(.*[^[:space:]])[[:space:]]*$ ]] && line="${BASH_REMATCH[1]}" || line=""
+    raw_values["$name"]="$line"
+    var_names+=("$name")
+done
+
+# ---------------------------------------------------------------------------
+# Recursive expansion
+# ---------------------------------------------------------------------------
+# expand_value NAME
+#   Resolves $VAR / ${VAR} references in raw_values[NAME], storing the result
+#   in resolved_values[NAME].  Variables not in raw_values fall back to the
+#   calling environment.  Cycles are detected via the resolving[] array.
+expand_value() {
+    local ev_name="$1"
+
+    # Already resolved — nothing to do
+    [[ -v resolved_values["$ev_name"] ]] && return
+
+    # Cycle detection
+    if [[ -v resolving["$ev_name"] ]]; then
+        printf 'envdir-resolve: cycle detected involving variable: %s\n' \
+            "$ev_name" >&2
+        exit 1
+    fi
+
+    # Not defined in the source dir — fall back to the calling environment
+    if [[ ! -v raw_values["$ev_name"] ]]; then
+        resolved_values["$ev_name"]="${!ev_name:-}"
+        return
+    fi
+
+    resolving["$ev_name"]=1
+
+    local ev_raw="${raw_values[$ev_name]}"
+    local ev_result=""
+    local ev_rest="$ev_raw"
+    local ev_ref
+
+    # Walk the string, expanding $VAR and ${VAR} tokens
+    while [[ -n "$ev_rest" ]]; do
+        # Split at the next $ sign
+        if [[ "$ev_rest" =~ ^([^\$]*)\$(.*)$ ]]; then
+            ev_result+="${BASH_REMATCH[1]}"
+            ev_rest="${BASH_REMATCH[2]}"
+        else
+            # No $ remaining — append the tail and stop
+            ev_result+="$ev_rest"
+            break
+        fi
+
+        ev_ref=""
+        if [[ "$ev_rest" == '{'* ]]; then
+            # ${VAR} form
+            ev_rest="${ev_rest#\{}"
+            ev_ref="${ev_rest%%\}*}"
+            ev_rest="${ev_rest#*\}}"
+        elif [[ "$ev_rest" =~ ^([A-Za-z_][A-Za-z0-9_]*)(.*)$ ]]; then
+            # $VAR form: identifier chars only
+            ev_ref="${BASH_REMATCH[1]}"
+            ev_rest="${BASH_REMATCH[2]}"
+        fi
+
+        if [[ -z "$ev_ref" ]]; then
+            # Bare $ with no valid identifier — preserve literally
+            ev_result+='$'
+            continue
+        fi
+
+        expand_value "$ev_ref"
+        ev_result+="${resolved_values[$ev_ref]:-}"
+    done
+
+    resolved_values["$ev_name"]="$ev_result"
+    unset 'resolving[$ev_name]'
+}
+
+# Expand every variable; results accumulate in resolved_values[]
+for name in "${var_names[@]}"; do
+    expand_value "$name"
+done
+
+# ---------------------------------------------------------------------------
+# Write resolved values to dst_dir
+# ---------------------------------------------------------------------------
+mkdir -p "$dst_dir"
+
+# Remove stale files in dst that no longer exist in src
+for f in "$dst_dir"/*; do
+    [[ -e "$f" ]] || continue
+    name="${f##*/}"
+    [[ -f "$src_dir/$name" ]] || rm -f "$f"
+done
+
+for name in "${var_names[@]}"; do
+    printf '%s\n' "${resolved_values[$name]}" > "$dst_dir/$name"
+done
+
+# ---------------------------------------------------------------------------
+# Exec
+# ---------------------------------------------------------------------------
+exec envdir "$dst_dir" "$@"
