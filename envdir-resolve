@@ -9,6 +9,7 @@
 # Output goes to ${XDG_STATE_HOME:-$HOME/.local/state}/env
 
 set -euo pipefail
+shopt -s nullglob
 
 # ---------------------------------------------------------------------------
 # Argument parsing: optional DIR before --
@@ -140,7 +141,6 @@ mkdir -p "$dst_dir"
 
 # Remove stale files in dst that no longer exist in src
 for f in "$dst_dir"/*; do
-    [[ -e "$f" ]] || continue
     name="${f##*/}"
     [[ -f "$src_dir/$name" ]] || rm -fv "$f"
 done
