@@ -47,11 +47,14 @@ dst_dir="${XDG_STATE_HOME:-$HOME/.local/state}/env"
 # Up-to-date check: skip if dst_dir is newer than every file in src_dir
 # ---------------------------------------------------------------------------
 if [[ -d "$dst_dir" ]]; then
-    # -print -quit avoids a broken pipe when only the first match is needed
-    newer=$(find "$src_dir" -newer "$dst_dir" -type f 2>/dev/null -print -quit)
-    if [[ -z "$newer" ]]; then
-        exec envdir "$dst_dir" "$@"
-    fi
+    stale=0
+    for f in "$src_dir"/*; do
+        if [[ -f "$f" && "$f" -nt "$dst_dir" ]]; then
+            stale=1
+            break
+        fi
+    done
+    (( stale )) || exec envdir "$dst_dir" "$@"
 fi
 
 # ---------------------------------------------------------------------------
