@@ -62,9 +62,8 @@ if [[ ! -d "$src_dir" ]]; then
     exit 1
 fi
 
-declare -A raw_values=()        # raw_values[NAME]    = first-line content
-declare -A resolved_values=()   # resolved_values[NAME] = fully expanded content
-declare -A resolving=()         # resolving[NAME]=1   while resolution is in progress
+# raw_values[N]=first-line content, resolved_values[N]=expanded value, resolving[N]=1 during expansion
+declare -A raw_values=() resolved_values=() resolving=()
 
 var_names=()
 
@@ -74,7 +73,7 @@ for f in "$src_dir"/*; do
     [[ "$name" == .* ]] && continue      # skip dot-files (envdir convention)
     [[ "$name" == *=* ]] && continue     # skip names containing '=' (invalid)
     # Read first line (envdir semantics); strip trailing whitespace via regex
-    IFS= read -r line < "$f" || true
+    IFS= read -r line < "$f" || :
     [[ "$line" =~ ^(.*[^[:space:]])[[:space:]]*$ ]] && line="${BASH_REMATCH[1]}" || line=""
     raw_values["$name"]="$line"
     var_names+=("$name")
@@ -85,8 +84,8 @@ done
 # ---------------------------------------------------------------------------
 # expand_value NAME
 #   Resolves $VAR / ${VAR} references in raw_values[NAME], storing the result
-#   in resolved_values[NAME].  Variables not in raw_values fall back to the
-#   calling environment.  Cycles are detected via the resolving[] array.
+#   in resolved_values[NAME]. Variables not in raw_values fall back to the
+#   calling environment. Cycles are detected via the resolving[] array.
 expand_value() {
     local ev_name="$1"
 
@@ -108,47 +107,22 @@ expand_value() {
 
     resolving["$ev_name"]=1
 
-    local ev_raw="${raw_values[$ev_name]}"
-    local ev_result=""
-    local ev_rest="$ev_raw"
-    local ev_ref
+    local ev_input="${raw_values[$ev_name]}" ev_result="" ev_ref ev_match
 
-    # Walk the string, expanding $VAR and ${VAR} tokens
-    while [[ -n "$ev_rest" ]]; do
-        # Split at the next $ sign
-        if [[ "$ev_rest" =~ ^([^\$]*)\$(.*)$ ]]; then
-            ev_result+="${BASH_REMATCH[1]}"
-            ev_rest="${BASH_REMATCH[2]}"
-        else
-            # No $ remaining — append the tail and stop
-            ev_result+="$ev_rest"
-            break
-        fi
-
-        ev_ref=""
-        if [[ "$ev_rest" == '{'* ]]; then
-            # ${VAR} form
-            ev_rest="${ev_rest#\{}"
-            ev_ref="${ev_rest%%\}*}"
-            ev_rest="${ev_rest#*\}}"
-        elif [[ "$ev_rest" =~ ^([A-Za-z_][A-Za-z0-9_]*)(.*)$ ]]; then
-            # $VAR form: identifier chars only
-            ev_ref="${BASH_REMATCH[1]}"
-            ev_rest="${BASH_REMATCH[2]}"
-        fi
-
-        if [[ -z "$ev_ref" ]]; then
-            # Bare $ with no valid identifier — preserve literally
-            ev_result+='$'
-            continue
-        fi
-
+    # Iteratively find and replace each $VAR / ${VAR} reference with its
+    # resolved value; text between (and after) references is appended literally.
+    while [[ "$ev_input" =~ \$\{([[:alpha:]_][[:alnum:]_]*)\}|\$([[:alpha:]_][[:alnum:]_]*) ]]; do
+        ev_match="${BASH_REMATCH[0]}"
+        ev_ref="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        ev_result+="${ev_input%%"$ev_match"*}"   # literal text before first match
+        ev_input="${ev_input#*"$ev_match"}"       # remainder after first match
         expand_value "$ev_ref"
         ev_result+="${resolved_values[$ev_ref]:-}"
     done
+    ev_result+="$ev_input"   # append any remaining literal text (including bare $)
 
     resolved_values["$ev_name"]="$ev_result"
-    unset 'resolving[$ev_name]'
+    unset "resolving[$ev_name]"
 }
 
 # Expand every variable; results accumulate in resolved_values[]
@@ -165,7 +139,7 @@ mkdir -p "$dst_dir"
 for f in "$dst_dir"/*; do
     [[ -e "$f" ]] || continue
     name="${f##*/}"
-    [[ -f "$src_dir/$name" ]] || rm -f "$f"
+    [[ -f "$src_dir/$name" ]] || rm -fv "$f"
 done
 
 for name in "${var_names[@]}"; do
